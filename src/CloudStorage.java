@@ -1,76 +1,97 @@
 import java.math.BigDecimal;
 import java.math.RoundingMode;
-import java.util.Objects;
 
-/** Облачное хранилище. Все цены относятся к одному расчетному дню. */
-public class CloudStorage {
+public abstract class CloudStorage {
+
+  private static final double MIN_BASE_PRICE = 100.0;
   private static final String DEFAULT_TARIFF = "100 ГБ";
-  private static final int DEFAULT_FREQUENCY = 1;
-  private static final int BASE_MULTIPLIER = 1;
-  private static final int MEDIUM_MULTIPLIER = 2;
-  private static final int LARGE_MULTIPLIER = 4;
 
   private final String name;
   private final double basePrice;
   private final String tariff;
+
   private BackupOption appliedOption = null;
   private int backupFrequency = 0;
 
-  public CloudStorage(String name, double basePrice) {
+  protected CloudStorage(String name, double basePrice) {
     this(name, basePrice, DEFAULT_TARIFF);
   }
 
-  public CloudStorage(String name, double basePrice, String tariff) {
-    this(name, basePrice, tariff, null);
-  }
-
-  public CloudStorage(
-      String name, double basePrice, String tariff, BackupOption appliedOption) {
+  protected CloudStorage(String name, double basePrice, String tariff) {
     if (name == null || name.isBlank()) {
-      throw new IllegalArgumentException("Название хранилища не должно быть пустым.");
+      System.out.println(
+              "[ПРЕДУПРЕЖДЕНИЕ] Название не указано. Установлено «Хранилище».");
+      this.name = "Хранилище";
+    } else {
+      this.name = name;
     }
-    if (!Double.isFinite(basePrice) || basePrice < 0) {
-      throw new IllegalArgumentException("Базовая цена должна быть конечной и неотрицательной.");
+
+    if (!Double.isFinite(basePrice) || basePrice <= 0) {
+      System.out.println(
+              "[ПРЕДУПРЕЖДЕНИЕ] Некорректная базовая цена. "
+                      + "Установлено 100 рублей.");
+      this.basePrice = MIN_BASE_PRICE;
+    } else {
+      this.basePrice = Math.max(0.01, roundMoney(basePrice));
     }
-    Objects.requireNonNull(tariff, "Тариф не должен быть null.");
-    tariffMultiplier(tariff);
-    this.name = name;
-    this.basePrice = BigDecimal.valueOf(basePrice).setScale(2, RoundingMode.HALF_UP)
-        .doubleValue();
-    this.tariff = tariff;
-    if (appliedOption != null) {
-      enableBackup(appliedOption);
-    }
+
+    this.tariff = tariff == null ? "" : tariff;
   }
 
-  /** Базовая стоимость с учетом тарифа, без дополнительной услуги. */
+  public abstract double calculateBillingPrice();
+
+  // Общий расчет тарифа для обоих наследников.
+  protected double calculateTariffPrice() {
+    int multiplier = switch (tariff) {
+      case "100 ГБ" -> 1;
+      case "512 ГБ" -> 2;
+      case "2 ТБ" -> 4;
+      default -> {
+        System.out.println(
+                "[ПРЕДУПРЕЖДЕНИЕ] Неизвестный тариф «" + tariff
+                        + "». Расчет выполнен по тарифу 100 ГБ.");
+        yield 1;
+      }
+    };
+
+    return roundMoney(basePrice * multiplier);
+  }
+
+  // Стоимость подписки без резервного копирования.
   public double calculateFinalPrice() {
-    return storagePrice().doubleValue();
+    return calculateBillingPrice();
   }
 
-  /** Подключение опции с одним копированием в день. */
+  // Одно резервное копирование в день.
   public double calculateFinalPrice(BackupOption option) {
-    return calculateFinalPrice(option, DEFAULT_FREQUENCY);
+    return calculateFinalPrice(option, 1);
   }
 
-  /** Подключение опции; доплата = цена одного копирования * частота в день. */
+  // Стоимость подписки и резервного копирования.
   public double calculateFinalPrice(BackupOption option, int frequency) {
-    Objects.requireNonNull(option, "Опция не должна быть null.");
-    if (frequency <= 0) {
-      throw new IllegalArgumentException("Частота копирования должна быть больше нуля.");
+    if (option == null) {
+      System.out.println(
+              "[ПРЕДУПРЕЖДЕНИЕ] Опция не указана. "
+                      + "Возвращена стоимость без резервного копирования.");
+      return calculateBillingPrice();
     }
-    double result = storagePrice().add(
-        BigDecimal.valueOf(option.getPrice()).multiply(BigDecimal.valueOf(frequency)))
-        .setScale(2, RoundingMode.HALF_UP).doubleValue();
-    if (!Double.isFinite(result)) {
-      throw new IllegalArgumentException("Итоговая стоимость слишком велика.");
+
+    if (frequency < 1) {
+      System.out.println(
+              "[ПРЕДУПРЕЖДЕНИЕ] Частота должна быть больше нуля. "
+                      + "Установлено одно копирование в день.");
+      frequency = 1;
     }
+
+    double finalPrice = roundMoney(
+            calculateBillingPrice() + option.getPrice() * frequency);
+
     appliedOption = option;
     backupFrequency = frequency;
-    return result;
+
+    return finalPrice;
   }
 
-  // Имена из таблицы варианта 17. Расчет делегируется единой реализации.
   public double enableBackup(BackupOption option) {
     return calculateFinalPrice(option);
   }
@@ -79,22 +100,15 @@ public class CloudStorage {
     return calculateFinalPrice(option, frequency);
   }
 
-  private BigDecimal storagePrice() {
-    BigDecimal result = BigDecimal.valueOf(basePrice)
-        .multiply(BigDecimal.valueOf(tariffMultiplier(tariff)));
-    if (!Double.isFinite(result.doubleValue())) {
-      throw new IllegalArgumentException("Стоимость хранилища слишком велика.");
+  protected static double roundMoney(double amount) {
+    if (!Double.isFinite(amount)) {
+      throw new IllegalArgumentException(
+              "Денежная сумма выходит за допустимый диапазон.");
     }
-    return result.setScale(2, RoundingMode.HALF_UP);
-  }
 
-  private static int tariffMultiplier(String tariff) {
-    return switch (tariff) {
-      case "100 ГБ" -> BASE_MULTIPLIER;
-      case "512 ГБ" -> MEDIUM_MULTIPLIER;
-      case "2 ТБ" -> LARGE_MULTIPLIER;
-      default -> throw new IllegalArgumentException("Неизвестный тариф: " + tariff);
-    };
+    return BigDecimal.valueOf(amount)
+            .setScale(2, RoundingMode.HALF_UP)
+            .doubleValue();
   }
 
   public String getName() {
